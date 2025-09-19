@@ -12,7 +12,21 @@
 
 ## インストール
 
-Poetry 環境を使用してください：
+### 別のプロジェクトで使用する場合（推奨）
+
+pipでGitHubから直接インストール：
+
+```bash
+pip install git+https://github.com/vitroid/rasterio_tiff.git
+```
+
+またはPoetryを使用している場合：
+
+```bash
+poetry add git+https://github.com/vitroid/rasterio_tiff.git
+```
+
+### 開発環境として使用する場合
 
 ```bash
 # プロジェクトをクローン
@@ -31,7 +45,7 @@ poetry shell
 ### 新しい TIFF ファイルの作成
 
 ```python
-from tiffeditor import TiffEditor
+from rasterio_tiff import TiffEditor
 import numpy as np
 
 # 新しいTIFFファイルを作成
@@ -53,6 +67,8 @@ with TiffEditor(
 ### 既存 TIFF ファイルの読み書き
 
 ```python
+from rasterio_tiff import TiffEditor
+
 # 既存ファイルを開く
 with TiffEditor("existing_image.tiff", mode="r+") as editor:
     # 部分的にデータを読み込み
@@ -70,8 +86,11 @@ with TiffEditor("existing_image.tiff", mode="r+") as editor:
 メモリに乗らない大きなファイルのテストも可能です：
 
 ```bash
-# 大きなTIFFファイル作成テスト（6GB程度のファイルを作成）
-poetry run python tiffeditor.py large_test
+# 開発環境の場合
+poetry run python rasterio_tiff/tiffeditor.py large_test
+
+# または直接Pythonで実行
+python -c "from rasterio_tiff.tiffeditor import test_large_tiff; test_large_tiff()"
 ```
 
 このテストでは以下が確認されます：
@@ -129,10 +148,13 @@ MIT License
 
 ```bash
 # 基本的なエディタテスト
-poetry run python tiffeditor.py test_editor
+poetry run python rasterio_tiff/tiffeditor.py test_editor
 
 # 画像ファイルからTIFF作成テスト
-poetry run python tiffeditor.py your_image.png 512
+poetry run python rasterio_tiff/tiffeditor.py your_image.png 512
+
+# または関数を直接インポートして実行
+python -c "from rasterio_tiff.tiffeditor import test_tiff_editor; test_tiff_editor()"
 ```
 
 ### パフォーマンス要件

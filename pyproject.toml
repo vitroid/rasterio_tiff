@@ -3,7 +3,8 @@ name = "rasterio-tiff"
 version = "0.1.0"
 description = "TIFF画像の部分編集ツール"
 authors = ["User"]
-package-mode = false
+readme = "README.md"
+packages = [{include = "rasterio_tiff"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
