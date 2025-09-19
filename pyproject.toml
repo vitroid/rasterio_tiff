@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "rasterio-tiff"
+version = "0.1.0"
+description = "TIFF画像の部分編集ツール"
+authors = ["User"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+numpy = "^1.24.0"
+tifffile = "^2024.8.30"
+rasterio = "^1.3.0"
+opencv-python = "^4.8.0"
+psutil = "^7.1.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
