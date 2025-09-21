@@ -312,7 +312,7 @@ class TiffEditor:
         resampling: Resampling = Resampling.bilinear,
     ) -> np.ndarray:
         """
-        TIFF画像全体の縮小版を効率的に取得する
+        TIFF画像全体の縮小版を効率的に取得する（読み取り専用対応）
 
         Args:
             scale_factor: 縮小倍率（0.0-1.0）。target_widthが指定された場合は無視される
@@ -324,6 +324,10 @@ class TiffEditor:
 
         Raises:
             ValueError: scale_factorとtarget_widthの両方が未指定、または不正な値の場合
+
+        Note:
+            この関数は元のTIFFファイルを変更しません。読み取り専用モードでも動作します。
+            rasterioのout_shapeパラメータを使用してメモリ効率的に縮小を行います。
         """
         if scale_factor is None and target_width is None:
             raise ValueError(
@@ -352,34 +356,41 @@ class TiffEditor:
             f"画像を縮小中: {original_width}x{original_height} -> {output_width}x{output_height} (scale: {scale_factor:.3f})"
         )
 
-        if not self._rasterio_handle:
-            raise ValueError(
-                "rasterioハンドルが必要です（読み書きモードで開いてください）"
+        # rasterioハンドルの確認（読み取り専用でも可）
+        handle = self._rasterio_handle or self._tiff_handle
+        if not handle:
+            raise ValueError("ファイルハンドルが利用できません")
+
+        if self._rasterio_handle:
+            # rasterioハンドルを使用してメモリ効率的に縮小
+            # out_shapeパラメータを使用して読み込み時に縮小
+            scaled_data = self._rasterio_handle.read(
+                out_shape=(channels, output_height, output_width),
+                resampling=resampling
             )
-
-        # rasterioのresample機能を使用して効率的に縮小
-        # 出力用のnumpy配列を準備
-        scaled_data = np.zeros(
-            (channels, output_height, output_width), dtype=self.dtype
-        )
-
-        # 変換行列を設定（縮小）
-        transform = self._rasterio_handle.transform * Affine.scale(1 / scale_factor)
-
-        # 各チャンネルを個別に縮小
-        for i in range(channels):
-            # ソースデータを読み込み
-            source_data = self._rasterio_handle.read(i + 1)
-
-            warp.reproject(
-                source=source_data,
-                destination=scaled_data[i],
-                src_transform=self._rasterio_handle.transform,
-                src_crs=self._rasterio_handle.crs,
-                dst_transform=transform,
-                dst_crs=self._rasterio_handle.crs,
-                resampling=resampling,
-            )
+        else:
+            # tifffileハンドルの場合は全体を読み込んでからリサイズ
+            # （この場合はメモリ効率が劣るが、読み取り専用で動作）
+            page = self._tiff_handle.pages[0]
+            full_data = page.asarray()
+            
+            if full_data.ndim == 3:
+                # (height, width, channels) -> (channels, height, width)
+                full_data = np.transpose(full_data, (2, 0, 1))
+            else:
+                # 単一チャンネルの場合
+                full_data = full_data[np.newaxis, :, :]
+                channels = 1
+            
+            # OpenCVを使用してリサイズ
+            scaled_data = np.zeros((channels, output_height, output_width), dtype=full_data.dtype)
+            for i in range(channels):
+                scaled_data[i] = cv2.resize(
+                    full_data[i], 
+                    (output_width, output_height),
+                    interpolation=cv2.INTER_LINEAR if resampling == Resampling.bilinear 
+                                  else cv2.INTER_NEAREST
+                )
 
         # チャンネル順を変更: (channels, height, width) -> (height, width, channels)
         if channels > 1:
