@@ -14,7 +14,34 @@ import cv2
 # tiledimageからまるまる移植。
 
 
-from rasterio_tiff import Rect
+# Range、Rectクラスを直接定義（循環インポート回避）
+from dataclasses import dataclass
+
+
+@dataclass
+class Range:
+    """数値の範囲を表現するクラス"""
+
+    min_val: int
+    max_val: int
+
+    @property
+    def width(self) -> int:
+        """範囲の幅を返す"""
+        return self.max_val - self.min_val
+
+
+@dataclass
+class Rect:
+    """2次元の領域を表現するクラス"""
+
+    x_range: Range
+    y_range: Range
+
+    @classmethod
+    def from_bounds(cls, left: int, right: int, top: int, bottom: int) -> "Rect":
+        """座標からRectを作成する"""
+        return cls(Range(left, right), Range(top, bottom))
 
 
 class TiffEditor:
@@ -65,7 +92,7 @@ class TiffEditor:
 
         # ファイルが存在しない場合の処理
         if not os.path.exists(filepath):
-            if create_if_not_exists and mode in ["w", "r+"]:
+            if mode == "w" or (create_if_not_exists and mode in ["w", "r+"]):
                 if shape is None or dtype is None:
                     raise ValueError("新規作成時はshapeとdtypeを指定してください")
                 self._create_tiff_file(shape, dtype)
@@ -74,7 +101,15 @@ class TiffEditor:
             elif mode != "w":
                 raise FileNotFoundError(f"ファイルが見つかりません: {filepath}")
         else:
-            self._open_file()
+            # 既存ファイルがある場合
+            if mode == "w":
+                # 書き込みモードの場合は既存ファイルを上書き
+                if shape is None or dtype is None:
+                    raise ValueError("mode='w'時はshapeとdtypeを指定してください")
+                self._create_tiff_file(shape, dtype)
+                self._open_file()
+            else:
+                self._open_file()
 
     def _create_tiff_file(self, shape: Tuple[int, int, int], dtype: np.dtype):
         """新しいタイル化TIFFファイルを作成する"""
@@ -98,18 +133,35 @@ class TiffEditor:
         try:
             if self.mode == "r":
                 # 読み込み専用の場合はtifffileを使用
-                self._tiff_handle = tifffile.TiffFile(self.filepath)
+                if os.path.exists(self.filepath):
+                    self._tiff_handle = tifffile.TiffFile(self.filepath)
+                else:
+                    raise FileNotFoundError(
+                        f"読み取り用ファイルが存在しません: {self.filepath}"
+                    )
             else:
                 # 読み書きの場合はrasterioを使用
-                # ファイルが存在するかチェック
                 if os.path.exists(self.filepath):
                     self._rasterio_handle = rasterio.open(self.filepath, "r+")
                 else:
-                    # ファイルが存在しない場合は何もしない（_create_tiff_fileの後で再度呼ばれる）
-                    pass
+                    raise FileNotFoundError(
+                        f"読み書き用ファイルが存在しません: {self.filepath}"
+                    )
+
+            # ハンドルが正しく設定されたかチェック
+            if not self._tiff_handle and not self._rasterio_handle:
+                raise IOError("ファイルハンドルの初期化に失敗しました")
 
         except Exception as e:
             raise IOError(f"ファイルを開けませんでした: {e}")
+
+    def _ensure_handle_initialized(self):
+        """ハンドルが初期化されていることを保証する"""
+        if not self._tiff_handle and not self._rasterio_handle:
+            self.logger.warning(
+                "ハンドルが初期化されていません。再初期化を試行します。"
+            )
+            self._open_file()
 
     def __enter__(self):
         return self
@@ -129,6 +181,9 @@ class TiffEditor:
     @property
     def shape(self) -> Tuple[int, int, int]:
         """画像の形状を取得"""
+        # ハンドルが初期化されていることを確認
+        self._ensure_handle_initialized()
+
         if self._rasterio_handle:
             height, width = self._rasterio_handle.height, self._rasterio_handle.width
             channels = self._rasterio_handle.count
@@ -144,6 +199,9 @@ class TiffEditor:
     @property
     def dtype(self) -> np.dtype:
         """データ型を取得"""
+        # ハンドルが初期化されていることを確認
+        self._ensure_handle_initialized()
+
         if self._rasterio_handle:
             return self._rasterio_handle.dtypes[0]
         elif self._tiff_handle:
@@ -365,15 +423,14 @@ class TiffEditor:
             # rasterioハンドルを使用してメモリ効率的に縮小
             # out_shapeパラメータを使用して読み込み時に縮小
             scaled_data = self._rasterio_handle.read(
-                out_shape=(channels, output_height, output_width),
-                resampling=resampling
+                out_shape=(channels, output_height, output_width), resampling=resampling
             )
         else:
             # tifffileハンドルの場合は全体を読み込んでからリサイズ
             # （この場合はメモリ効率が劣るが、読み取り専用で動作）
             page = self._tiff_handle.pages[0]
             full_data = page.asarray()
-            
+
             if full_data.ndim == 3:
                 # (height, width, channels) -> (channels, height, width)
                 full_data = np.transpose(full_data, (2, 0, 1))
@@ -381,15 +438,20 @@ class TiffEditor:
                 # 単一チャンネルの場合
                 full_data = full_data[np.newaxis, :, :]
                 channels = 1
-            
+
             # OpenCVを使用してリサイズ
-            scaled_data = np.zeros((channels, output_height, output_width), dtype=full_data.dtype)
+            scaled_data = np.zeros(
+                (channels, output_height, output_width), dtype=full_data.dtype
+            )
             for i in range(channels):
                 scaled_data[i] = cv2.resize(
-                    full_data[i], 
+                    full_data[i],
                     (output_width, output_height),
-                    interpolation=cv2.INTER_LINEAR if resampling == Resampling.bilinear 
-                                  else cv2.INTER_NEAREST
+                    interpolation=(
+                        cv2.INTER_LINEAR
+                        if resampling == Resampling.bilinear
+                        else cv2.INTER_NEAREST
+                    ),
                 )
 
         # チャンネル順を変更: (channels, height, width) -> (height, width, channels)
