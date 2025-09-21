@@ -80,12 +80,16 @@ class TiffEditor:
                 if shape is None or dtype is None:
                     raise ValueError("mode='w'時はshapeとdtypeを指定してください")
                 self._create_tiff_file(shape, dtype)
+                logger.info(
+                    f"新しいTIFFファイルを作成しました2: {filepath} (shape: {shape}, dtype: {dtype})"
+                )
                 self._open_file()
             else:
                 self._open_file()
 
     def _create_tiff_file(self, shape: Tuple[int, int, int], dtype: np.dtype):
         """新しいタイル化TIFFファイルを作成する"""
+        logger = logging.getLogger()
         height, width, channels = shape
 
         # ダミーデータで初期化
