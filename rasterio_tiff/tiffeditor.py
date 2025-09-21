@@ -46,16 +46,18 @@ class Rect:
 
 class TiffEditor:
     """
-    TIFFファイルの部分編集を可能にするクラス
+    TIFFファイルの部分編集を可能にするクラス（BGR形式でデータを扱う）
 
     メモリ効率の良い方法で巨大なTIFFファイルの部分的な読み書きを行う。
     TiledImageの設計思想を参考に、ディスク上のTIFFファイルを直接操作する。
+    OpenCV（cv2）との互換性のため、すべてのカラー画像データはBGR形式で扱う。
 
     Features:
-    - 部分的な読み込み（メモリ効率）
-    - 部分的な書き込み（既存ファイルの更新）
+    - 部分的な読み込み（メモリ効率、BGR形式で返す）
+    - 部分的な書き込み（既存ファイルの更新、BGR形式で受け取る）
     - タイル構造の活用
     - スライス記法での操作
+    - OpenCV（cv2）との完全互換
     """
 
     def __init__(
@@ -240,12 +242,12 @@ class TiffEditor:
         return Rect.from_bounds(x_start, x_stop, y_start, y_stop)
 
     def __getitem__(self, key) -> np.ndarray:
-        """スライスで領域を取得する"""
+        """スライスで領域を取得する（BGR形式で返す）"""
         region = self._parse_slice(key)
         return self.get_region(region)
 
     def __setitem__(self, key, value: np.ndarray):
-        """スライスで領域を設定する"""
+        """スライスで領域を設定する（BGR形式で受け取る）"""
         if not isinstance(value, np.ndarray):
             raise TypeError("NumPy配列を指定してください")
 
@@ -253,7 +255,7 @@ class TiffEditor:
         self.put_region(region, value)
 
     def get_region(self, region: Rect) -> np.ndarray:
-        """指定された領域のデータを読み込む"""
+        """指定された領域のデータを読み込む（BGR形式で返す）"""
         x_start = region.x_range.min_val
         x_stop = region.x_range.max_val
         y_start = region.y_range.min_val
@@ -284,11 +286,19 @@ class TiffEditor:
         else:
             raise ValueError("ファイルが開かれていません")
 
-        self.logger.debug(f"領域を読み込みました: {region}, shape: {data.shape}")
+        # RGB形式で保存されているデータをBGR形式に変換（CV2互換）
+        if data.ndim == 3 and data.shape[2] == 3:
+            data = cv2.cvtColor(data, cv2.COLOR_RGB2BGR)
+        elif data.ndim == 3 and data.shape[2] == 4:
+            data = cv2.cvtColor(data, cv2.COLOR_RGBA2BGRA)
+
+        self.logger.debug(
+            f"領域を読み込みました（BGR形式）: {region}, shape: {data.shape}"
+        )
         return data
 
     def put_region(self, region: Rect, data: np.ndarray):
-        """指定された領域にデータを書き込む"""
+        """指定された領域にデータを書き込む（入力はBGR形式、内部でRGBに変換）"""
         if self.mode == "r":
             raise ValueError("読み込み専用モードでは書き込みできません")
 
@@ -317,23 +327,32 @@ class TiffEditor:
                 f"データサイズが一致しません。期待: {expected_shape}, 実際: {data.shape}"
             )
 
+        # BGR形式で入力されたデータをRGB形式に変換してからTIFFに保存
+        write_data = data.copy()
+        if data.ndim == 3 and data.shape[2] == 3:
+            write_data = cv2.cvtColor(data, cv2.COLOR_BGR2RGB)
+        elif data.ndim == 3 and data.shape[2] == 4:
+            write_data = cv2.cvtColor(data, cv2.COLOR_BGRA2RGBA)
+
         if self._rasterio_handle:
             # rasterioを使用した書き込み
             window = Window(x_start, y_start, width, height)
 
-            if data.ndim == 3:
+            if write_data.ndim == 3:
                 # (height, width, channels) -> (channels, height, width)
-                write_data = np.transpose(data, (2, 0, 1))
-                for i in range(write_data.shape[0]):
-                    self._rasterio_handle.write(write_data[i], i + 1, window=window)
+                formatted_data = np.transpose(write_data, (2, 0, 1))
+                for i in range(formatted_data.shape[0]):
+                    self._rasterio_handle.write(formatted_data[i], i + 1, window=window)
             else:
                 # 単一チャンネル
-                self._rasterio_handle.write(data, 1, window=window)
+                self._rasterio_handle.write(write_data, 1, window=window)
 
         else:
             raise ValueError("書き込みにはrasterioハンドルが必要です")
 
-        self.logger.debug(f"領域に書き込みました: {region}, shape: {data.shape}")
+        self.logger.debug(
+            f"領域に書き込みました（BGR→RGB変換済み）: {region}, shape: {data.shape}"
+        )
 
     def get_info(self) -> dict:
         """ファイルの情報を取得する"""
@@ -460,25 +479,25 @@ class TiffEditor:
         else:
             scaled_data = scaled_data[0]  # 単一チャンネルの場合
 
-        # RGBからBGRに変換（OpenCV形式）
+        # TIFFファイルはRGB形式で保存されているため、BGR形式に変換（OpenCV互換）
         if channels == 3:
             scaled_data = cv2.cvtColor(scaled_data, cv2.COLOR_RGB2BGR)
         elif channels == 4:
             scaled_data = cv2.cvtColor(scaled_data, cv2.COLOR_RGBA2BGRA)
 
-        self.logger.info(f"縮小完了: 出力形状 {scaled_data.shape}")
+        self.logger.info(f"縮小完了（BGR形式）: 出力形状 {scaled_data.shape}")
         return scaled_data
 
 
 def create_sample_tiff(filepath: str, shape: Tuple[int, int, int], tilesize: int = 512):
-    """サンプルのタイル化TIFFファイルを作成する関数"""
+    """サンプルのタイル化TIFFファイルを作成する関数（RGB形式でTIFFに保存）"""
     height, width, channels = shape
 
     # グラデーションパターンを作成
     y_coords, x_coords = np.mgrid[0:height, 0:width]
 
     if channels == 3:
-        # カラーグラデーション
+        # カラーグラデーション（RGB順序で作成）
         r = (x_coords / width * 255).astype(np.uint8)
         g = (y_coords / height * 255).astype(np.uint8)
         b = ((x_coords + y_coords) / (width + height) * 255).astype(np.uint8)
@@ -487,7 +506,7 @@ def create_sample_tiff(filepath: str, shape: Tuple[int, int, int], tilesize: int
         # グレースケールグラデーション
         data = ((x_coords + y_coords) / (width + height) * 255).astype(np.uint8)
 
-    # タイル化TIFFとして保存
+    # タイル化TIFFとして保存（RGB形式）
     tifffile.imwrite(
         filepath,
         data,
@@ -534,11 +553,11 @@ def test_tiff_editor():
             verification_data = editor[100:300, 200:400]
             print(f"変更後の平均値 (R,G,B): {np.mean(verification_data, axis=(0,1))}")
 
-            # 別の領域を読み込んで表示用に保存
+            # 別の領域を読み込んで表示用に保存（TiffEditorはBGR形式を返すのでそのまま保存）
             display_region = editor[0:500, 0:500]
             cv2.imwrite(
                 "tiff_editor_test_output.png",
-                cv2.cvtColor(display_region, cv2.COLOR_RGB2BGR),
+                display_region,
             )
             print("テスト結果を 'tiff_editor_test_output.png' に保存しました")
 
@@ -583,19 +602,18 @@ def test():
     ) as tiff_editor:
         print(f"TIFFファイル情報: {tiff_editor.get_info()}")
 
-        # BGRからRGBに変換
-        rgb_image = cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB)
+        # CV2で読み込んだBGR画像をそのまま使用（TiffEditorはBGR形式を受け取る）
+        bgr_image = original_image
 
         # 画像を配置
-        tiff_editor[20 : 20 + height, 40 : 40 + width] = rgb_image
-        tiff_editor[10 : 10 + height, 20 : 20 + width] = rgb_image
+        tiff_editor[20 : 20 + height, 40 : 40 + width] = bgr_image
+        tiff_editor[10 : 10 + height, 20 : 20 + width] = bgr_image
 
-        # 結果を取得して表示
+        # 結果を取得して表示（TiffEditorはBGR形式を返す）
         result_image = tiff_editor[0:tiff_height, 0:tiff_width]
 
-        # RGBからBGRに戻して表示
-        display_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
-        cv2.imshow("TIFF Editor Result", display_image)
+        # 結果はすでにBGR形式なのでそのまま表示
+        cv2.imshow("TIFF Editor Result", result_image)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
