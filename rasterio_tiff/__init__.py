@@ -12,7 +12,7 @@ __email__ = ""
 
 __all__ = [
     "TiffEditor",
-    "Range", 
+    "Range",
     "Rect",
     "create_sample_tiff",
 ]
