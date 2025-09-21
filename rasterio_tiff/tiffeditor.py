@@ -1,12 +1,14 @@
 import logging
 import os
 from typing import Optional, Tuple, Union
-from dataclasses import dataclass
 import numpy as np
 import tifffile
 import rasterio
 from rasterio.windows import Window
 from rasterio import Affine
+from rasterio.enums import Resampling
+from rasterio import warp
+import cv2
 
 
 # tiledimageからまるまる移植。
@@ -302,6 +304,97 @@ class TiffEditor:
             )
 
         return info
+
+    def get_scaled_image(
+        self,
+        scale_factor: Optional[float] = None,
+        target_width: Optional[int] = None,
+        resampling: Resampling = Resampling.bilinear,
+    ) -> np.ndarray:
+        """
+        TIFF画像全体の縮小版を効率的に取得する
+
+        Args:
+            scale_factor: 縮小倍率（0.0-1.0）。target_widthが指定された場合は無視される
+            target_width: 目標となる画像幅。指定された場合、scale_factorは自動計算される
+            resampling: リサンプリング方法（デフォルト: bilinear）
+
+        Returns:
+            np.ndarray: 縮小された画像データ（BGR形式、shape: (height, width, channels)）
+
+        Raises:
+            ValueError: scale_factorとtarget_widthの両方が未指定、または不正な値の場合
+        """
+        if scale_factor is None and target_width is None:
+            raise ValueError(
+                "scale_factorまたはtarget_widthのいずれかを指定してください"
+            )
+
+        # 元画像の情報を取得
+        original_height, original_width, channels = self.shape
+
+        # スケールファクターの計算
+        if target_width is not None:
+            if target_width <= 0 or target_width > original_width:
+                raise ValueError(
+                    f"target_widthは1以上{original_width}以下である必要があります"
+                )
+            scale_factor = target_width / original_width
+        else:
+            if scale_factor <= 0 or scale_factor > 1:
+                raise ValueError("scale_factorは0より大きく1以下である必要があります")
+
+        # 出力サイズの計算
+        output_width = int(original_width * scale_factor)
+        output_height = int(original_height * scale_factor)
+
+        self.logger.info(
+            f"画像を縮小中: {original_width}x{original_height} -> {output_width}x{output_height} (scale: {scale_factor:.3f})"
+        )
+
+        if not self._rasterio_handle:
+            raise ValueError(
+                "rasterioハンドルが必要です（読み書きモードで開いてください）"
+            )
+
+        # rasterioのresample機能を使用して効率的に縮小
+        # 出力用のnumpy配列を準備
+        scaled_data = np.zeros(
+            (channels, output_height, output_width), dtype=self.dtype
+        )
+
+        # 変換行列を設定（縮小）
+        transform = self._rasterio_handle.transform * Affine.scale(1 / scale_factor)
+
+        # 各チャンネルを個別に縮小
+        for i in range(channels):
+            # ソースデータを読み込み
+            source_data = self._rasterio_handle.read(i + 1)
+
+            warp.reproject(
+                source=source_data,
+                destination=scaled_data[i],
+                src_transform=self._rasterio_handle.transform,
+                src_crs=self._rasterio_handle.crs,
+                dst_transform=transform,
+                dst_crs=self._rasterio_handle.crs,
+                resampling=resampling,
+            )
+
+        # チャンネル順を変更: (channels, height, width) -> (height, width, channels)
+        if channels > 1:
+            scaled_data = np.transpose(scaled_data, (1, 2, 0))
+        else:
+            scaled_data = scaled_data[0]  # 単一チャンネルの場合
+
+        # RGBからBGRに変換（OpenCV形式）
+        if channels == 3:
+            scaled_data = cv2.cvtColor(scaled_data, cv2.COLOR_RGB2BGR)
+        elif channels == 4:
+            scaled_data = cv2.cvtColor(scaled_data, cv2.COLOR_RGBA2BGRA)
+
+        self.logger.info(f"縮小完了: 出力形状 {scaled_data.shape}")
+        return scaled_data
 
 
 def create_sample_tiff(filepath: str, shape: Tuple[int, int, int], tilesize: int = 512):
