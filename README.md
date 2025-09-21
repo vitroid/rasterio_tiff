@@ -14,13 +14,13 @@
 
 ### 別のプロジェクトで使用する場合（推奨）
 
-pipでGitHubから直接インストール：
+pip で GitHub から直接インストール：
 
 ```bash
 pip install git+https://github.com/vitroid/rasterio_tiff.git
 ```
 
-またはPoetryを使用している場合：
+または Poetry を使用している場合：
 
 ```bash
 poetry add git+https://github.com/vitroid/rasterio_tiff.git
@@ -81,6 +81,49 @@ with TiffEditor("existing_image.tiff", mode="r+") as editor:
     editor[500:1500, 1000:2000] = modified_data
 ```
 
+### ScalableTiffEditor - 仮想的な大画像操作
+
+`ScalableTiffEditor`は、仮想的に大きな画像を扱えるクラスです。ユーザーには大きな画像を操作しているように見えて、実際には指定されたスケール（縮小率）でファイルが保存されます。
+
+```python
+from rasterio_tiff import ScalableTiffEditor
+import numpy as np
+
+# 仮想的に8000x6000の画像だが、実際は800x600で保存される（scale_factor=0.1）
+with ScalableTiffEditor(
+    filepath="virtual_large.tiff",
+    virtual_shape=(6000, 8000, 3),  # 仮想的なサイズ
+    scale_factor=0.1,                # 実際のサイズ = 仮想サイズ × 0.1
+    mode="w",
+    dtype=np.uint8,
+    create_if_not_exists=True,
+) as editor:
+    # ユーザーは大きな座標で操作
+    test_data = np.zeros((1000, 1000, 3), dtype=np.uint8)
+    test_data[:, :, 2] = 255  # 赤色
+
+    # 仮想座標で書き込み（実際には100x100にリサイズされて保存）
+    editor[1000:2000, 1500:2500] = test_data
+
+    # 仮想座標で読み込み（実際のデータが1000x1000にリサイズされて返される）
+    read_data = editor[1000:2000, 1500:2500]
+    print(f"読み込んだデータの形状: {read_data.shape}")  # (1000, 1000, 3)
+
+    print(f"ファイル情報: {editor.get_info()}")
+```
+
+**メリット:**
+
+- **メモリ効率**: 大きな画像のシミュレーションを小さなファイルサイズで実現
+- **透明性**: ユーザーは縮小を意識せずに大きな座標系で操作可能
+- **CV2 互換**: すべてのデータは BGR 形式で扱われるため、OpenCV との互換性完璧
+
+**使用例:**
+
+- プロトタイプ開発での大画像シミュレーション
+- メモリ制約のある環境での大画像処理
+- TrainScanner での効率的な画像操作
+
 ## パフォーマンステスト
 
 メモリに乗らない大きなファイルのテストも可能です：
@@ -125,7 +168,18 @@ INFO:__main__:✅ 大きなTIFFファイルの作成・整合性チェックが�
 
 ### `TiffEditor`
 
-メインクラス。TIFF ファイルの読み書きを担当。
+メインクラス。TIFF ファイルの読み書きを担当。すべてのカラーデータは BGR 形式で扱われ、OpenCV（cv2）との完全互換。
+
+### `ScalableTiffEditor`
+
+`TiffEditor`を継承した拡張クラス。仮想的に大きな画像を扱いながら、実際には縮小されたファイルで操作を行う。
+
+**主要な特徴:**
+
+- 仮想座標系での操作
+- 自動的なスケーリング（拡大・縮小）
+- メモリ効率の大幅改善
+- 透明な座標変換
 
 ### `Rect`, `Range`
 
@@ -150,11 +204,18 @@ MIT License
 # 基本的なエディタテスト
 poetry run python rasterio_tiff/tiffeditor.py test_editor
 
+# ScalableTiffEditorのテスト
+poetry run python rasterio_tiff/tiffeditor.py test_scalable
+
 # 画像ファイルからTIFF作成テスト
 poetry run python rasterio_tiff/tiffeditor.py your_image.png 512
 
 # または関数を直接インポートして実行
 python -c "from rasterio_tiff.tiffeditor import test_tiff_editor; test_tiff_editor()"
+python -c "from rasterio_tiff.tiffeditor import test_scalable_tiff_editor; test_scalable_tiff_editor()"
+
+# ScalableTiffEditorの簡単なデモ
+python test_scalable_demo.py
 ```
 
 ### パフォーマンス要件

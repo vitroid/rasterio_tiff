@@ -9,39 +9,7 @@ from rasterio import Affine
 from rasterio.enums import Resampling
 from rasterio import warp
 import cv2
-
-
-# tiledimageからまるまる移植。
-
-
-# Range、Rectクラスを直接定義（循環インポート回避）
-from dataclasses import dataclass
-
-
-@dataclass
-class Range:
-    """数値の範囲を表現するクラス"""
-
-    min_val: int
-    max_val: int
-
-    @property
-    def width(self) -> int:
-        """範囲の幅を返す"""
-        return self.max_val - self.min_val
-
-
-@dataclass
-class Rect:
-    """2次元の領域を表現するクラス"""
-
-    x_range: Range
-    y_range: Range
-
-    @classmethod
-    def from_bounds(cls, left: int, right: int, top: int, bottom: int) -> "Rect":
-        """座標からRectを作成する"""
-        return cls(Range(left, right), Range(top, bottom))
+from rasterio_tiff import Rect
 
 
 class TiffEditor:
@@ -787,6 +755,280 @@ def check_tiff_consistency(filepath: str, tilesize: int) -> bool:
         return False
 
 
+class ScalableTiffEditor(TiffEditor):
+    """
+    縮小画像を扱えるTiffEditorの拡張クラス（BGR形式でデータを扱う）
+
+    ユーザーには大きな画像を扱っているように見せかけて、
+    実際には指定されたスケールで縮小された画像で操作を行う。
+    これにより、メモリ効率を保ちながら大きな画像のシミュレーションが可能。
+
+    Example:
+        # 仮想的に10000x8000の画像だが、実際は1000x800で保存される
+        editor = ScalableTiffEditor(
+            "test.tiff",
+            virtual_shape=(8000, 10000, 3),
+            scale_factor=0.1
+        )
+
+        # ユーザーは大きな座標で操作
+        region = editor[1000:2000, 1500:2500]  # 仮想座標
+        # 実際には100:200, 150:250の領域から読み込まれる
+    """
+
+    def __init__(
+        self,
+        filepath: str,
+        virtual_shape: Tuple[int, int, int],
+        scale_factor: float,
+        mode: str = "r+",
+        tilesize: Union[int, Tuple[int, int]] = 512,
+        dtype: Optional[np.dtype] = None,
+        create_if_not_exists: bool = False,
+    ):
+        """
+        ScalableTiffEditorを初期化する
+
+        Args:
+            filepath: TIFFファイルのパス
+            virtual_shape: 仮想的な画像の形状 (height, width, channels)
+            scale_factor: 実際のファイルサイズに対するスケール (0.0-1.0)
+            mode: ファイルのオープンモード ('r', 'r+', 'w')
+            tilesize: タイルサイズ
+            dtype: データ型（新規作成時）
+            create_if_not_exists: ファイルが存在しない場合に新規作成するか
+        """
+        if not (0.0 < scale_factor <= 1.0):
+            raise ValueError("scale_factorは0.0より大きく1.0以下である必要があります")
+
+        self.virtual_shape = virtual_shape
+        self.scale_factor = scale_factor
+
+        # 実際のファイルサイズを計算
+        virtual_height, virtual_width, channels = virtual_shape
+        actual_height = int(virtual_height * scale_factor)
+        actual_width = int(virtual_width * scale_factor)
+        actual_shape = (actual_height, actual_width, channels)
+
+        # 親クラスを実際のサイズで初期化
+        super().__init__(
+            filepath=filepath,
+            mode=mode,
+            tilesize=tilesize,
+            dtype=dtype,
+            shape=actual_shape,
+            create_if_not_exists=create_if_not_exists,
+        )
+
+        self.logger.info(
+            f"ScalableTiffEditor初期化: 仮想サイズ{virtual_shape} -> 実際サイズ{actual_shape} (scale: {scale_factor})"
+        )
+
+    @property
+    def shape(self) -> Tuple[int, int, int]:
+        """仮想的な画像の形状を返す"""
+        return self.virtual_shape
+
+    @property
+    def actual_shape(self) -> Tuple[int, int, int]:
+        """実際のファイルの形状を返す"""
+        return super().shape
+
+    def _virtual_to_actual_coords(self, virtual_rect: Rect) -> Rect:
+        """仮想座標を実際の座標に変換する"""
+        actual_left = int(virtual_rect.left * self.scale_factor)
+        actual_right = int(virtual_rect.right * self.scale_factor)
+        actual_top = int(virtual_rect.top * self.scale_factor)
+        actual_bottom = int(virtual_rect.bottom * self.scale_factor)
+
+        # 実際のファイルサイズ内に収める
+        actual_height, actual_width, _ = self.actual_shape
+        actual_left = max(0, min(actual_left, actual_width))
+        actual_right = max(0, min(actual_right, actual_width))
+        actual_top = max(0, min(actual_top, actual_height))
+        actual_bottom = max(0, min(actual_bottom, actual_height))
+
+        return Rect.from_bounds(actual_left, actual_right, actual_top, actual_bottom)
+
+    def _actual_to_virtual_size(
+        self, actual_height: int, actual_width: int
+    ) -> Tuple[int, int]:
+        """実際のサイズを仮想サイズに変換する"""
+        virtual_height = int(actual_height / self.scale_factor)
+        virtual_width = int(actual_width / self.scale_factor)
+        return virtual_height, virtual_width
+
+    def get_region(self, region: Rect) -> np.ndarray:
+        """指定された仮想領域のデータを読み込む（BGR形式で返す）"""
+        # 仮想座標を実際の座標に変換
+        actual_region = self._virtual_to_actual_coords(region)
+
+        # 実際のデータを読み込み
+        actual_data = super().get_region(actual_region)
+
+        if actual_data.size == 0:
+            return actual_data
+
+        # 仮想サイズにリサイズ
+        virtual_height = region.height
+        virtual_width = region.width
+
+        if actual_data.ndim == 3:
+            # カラー画像
+            resized_data = cv2.resize(
+                actual_data,
+                (virtual_width, virtual_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        else:
+            # グレースケール画像
+            resized_data = cv2.resize(
+                actual_data,
+                (virtual_width, virtual_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+        self.logger.debug(
+            f"仮想領域を読み込み: {region} -> 実際{actual_region}, リサイズ後{resized_data.shape}"
+        )
+        return resized_data
+
+    def put_region(self, region: Rect, data: np.ndarray):
+        """指定された仮想領域にデータを書き込む（入力はBGR形式）"""
+        if self.mode == "r":
+            raise ValueError("読み込み専用モードでは書き込みできません")
+
+        # データサイズの検証
+        expected_shape = (region.height, region.width)
+        if data.ndim == 3:
+            expected_shape = (region.height, region.width, data.shape[2])
+
+        if data.shape[:2] != (region.height, region.width):
+            raise ValueError(
+                f"データサイズが一致しません。期待: {expected_shape}, 実際: {data.shape}"
+            )
+
+        # 仮想座標を実際の座標に変換
+        actual_region = self._virtual_to_actual_coords(region)
+
+        if actual_region.width <= 0 or actual_region.height <= 0:
+            self.logger.warning(f"実際の領域が無効です: {actual_region}")
+            return
+
+        # データを実際のサイズにリサイズ
+        if data.ndim == 3:
+            # カラー画像
+            resized_data = cv2.resize(
+                data,
+                (actual_region.width, actual_region.height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        else:
+            # グレースケール画像
+            resized_data = cv2.resize(
+                data,
+                (actual_region.width, actual_region.height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+        # 実際のファイルに書き込み
+        super().put_region(actual_region, resized_data)
+
+        self.logger.debug(
+            f"仮想領域に書き込み: {region} -> 実際{actual_region}, 元データ{data.shape} -> リサイズ後{resized_data.shape}"
+        )
+
+    def get_info(self) -> dict:
+        """ファイルの情報を取得する（仮想サイズと実際サイズの両方）"""
+        info = super().get_info()
+        info.update(
+            {
+                "virtual_shape": self.virtual_shape,
+                "actual_shape": self.actual_shape,
+                "scale_factor": self.scale_factor,
+                "virtual_size_mb": (
+                    self.virtual_shape[0]
+                    * self.virtual_shape[1]
+                    * self.virtual_shape[2]
+                )
+                / (1024 * 1024),
+            }
+        )
+        return info
+
+
+def test_scalable_tiff_editor():
+    """ScalableTiffEditorのテスト関数"""
+    import tempfile
+    import cv2
+
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    # テスト用の一時ファイル
+    with tempfile.NamedTemporaryFile(suffix=".tiff", delete=False) as tmp:
+        temp_filepath = tmp.name
+
+    try:
+        logger.info("ScalableTiffEditorのテストを開始...")
+
+        # 仮想的に大きなサイズ（8000x6000）だが、実際は800x600で保存
+        virtual_shape = (6000, 8000, 3)
+        scale_factor = 0.1
+
+        with ScalableTiffEditor(
+            temp_filepath,
+            virtual_shape=virtual_shape,
+            scale_factor=scale_factor,
+            mode="w",
+            dtype=np.uint8,
+            create_if_not_exists=True,
+        ) as editor:
+            logger.info(f"ファイル情報: {editor.get_info()}")
+
+            # 仮想座標でテストデータを作成（1000x1000の赤いボックス）
+            test_data = np.zeros((1000, 1000, 3), dtype=np.uint8)
+            test_data[:, :, 2] = 255  # BGR形式で赤
+
+            # 仮想座標で書き込み（実際には100x100にリサイズされて保存）
+            logger.info("仮想座標でデータを書き込み中...")
+            editor[1000:2000, 1500:2500] = test_data
+
+            # 異なる色で別の領域に書き込み
+            test_data2 = np.zeros((800, 1200, 3), dtype=np.uint8)
+            test_data2[:, :, 1] = 255  # BGR形式で緑
+            editor[3000:3800, 2000:3200] = test_data2
+
+            # 仮想座標で読み込み
+            logger.info("仮想座標でデータを読み込み中...")
+            read_data1 = editor[1000:2000, 1500:2500]
+            read_data2 = editor[3000:3800, 2000:3200]
+
+            logger.info(f"読み込んだデータ1の形状: {read_data1.shape}")
+            logger.info(f"読み込んだデータ2の形状: {read_data2.shape}")
+
+            # 全体の縮小画像を取得（仮想座標ベース）
+            logger.info("全体画像の一部を取得...")
+            overview = editor[0:3000, 0:4000]  # 仮想座標で3000x4000の領域
+
+            # 結果を保存
+            cv2.imwrite("scalable_test_overview.png", overview)
+            cv2.imwrite("scalable_test_region1.png", read_data1)
+            cv2.imwrite("scalable_test_region2.png", read_data2)
+
+            logger.info("テスト画像を保存しました:")
+            logger.info("- scalable_test_overview.png")
+            logger.info("- scalable_test_region1.png")
+            logger.info("- scalable_test_region2.png")
+
+        logger.info("ScalableTiffEditorのテストが完了しました！")
+
+    finally:
+        # 一時ファイルを削除
+        if os.path.exists(temp_filepath):
+            os.unlink(temp_filepath)
+
+
 if __name__ == "__main__":
     import sys
 
@@ -794,5 +1036,7 @@ if __name__ == "__main__":
         test_large_tiff()
     elif len(sys.argv) > 1 and sys.argv[1] == "test_editor":
         test_tiff_editor()
+    elif len(sys.argv) > 1 and sys.argv[1] == "test_scalable":
+        test_scalable_tiff_editor()
     else:
         test()
