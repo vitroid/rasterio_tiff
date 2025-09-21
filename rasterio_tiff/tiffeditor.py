@@ -66,6 +66,9 @@ class TiffEditor:
                 if shape is None or dtype is None:
                     raise ValueError("新規作成時はshapeとdtypeを指定してください")
                 self._create_tiff_file(shape, dtype)
+                self.logger.info(
+                    f"新しいTIFFファイルを作成しました: {filepath} (shape: {shape}, dtype: {dtype})"
+                )
                 # ファイル作成後に再度オープンを試行
                 self._open_file()
             elif mode != "w":
