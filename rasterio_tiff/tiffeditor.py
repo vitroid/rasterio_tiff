@@ -177,7 +177,7 @@ class TiffEditor:
         if y_slice.step is not None or x_slice.step is not None:
             raise NotImplementedError("ステップ付きスライスには未対応です")
 
-        return Rect.from_coords(x_start, x_stop, y_start, y_stop)
+        return Rect.from_bounds(x_start, x_stop, y_start, y_stop)
 
     def __getitem__(self, key) -> np.ndarray:
         """スライスで領域を取得する"""
