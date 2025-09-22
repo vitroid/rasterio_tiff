@@ -58,7 +58,7 @@ class TiffEditor:
 
         self._tiff_handle = None
         self._rasterio_handle = None
-        logger = logging.getLogger()
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
         # ファイルが存在しない場合の処理
         if not os.path.exists(filepath):
@@ -66,9 +66,6 @@ class TiffEditor:
                 if shape is None or dtype is None:
                     raise ValueError("新規作成時はshapeとdtypeを指定してください")
                 self._create_tiff_file(shape, dtype)
-                logger.info(
-                    f"新しいTIFFファイルを作成しました: {filepath} (shape: {shape}, dtype: {dtype})"
-                )
                 # ファイル作成後に再度オープンを試行
                 self._open_file()
             elif mode != "w":
@@ -80,16 +77,12 @@ class TiffEditor:
                 if shape is None or dtype is None:
                     raise ValueError("mode='w'時はshapeとdtypeを指定してください")
                 self._create_tiff_file(shape, dtype)
-                logger.info(
-                    f"新しいTIFFファイルを作成しました2: {filepath} (shape: {shape}, dtype: {dtype})"
-                )
                 self._open_file()
             else:
                 self._open_file()
 
     def _create_tiff_file(self, shape: Tuple[int, int, int], dtype: np.dtype):
         """新しいタイル化TIFFファイルを作成する"""
-        logger = logging.getLogger()
         height, width, channels = shape
 
         # ダミーデータで初期化
@@ -103,7 +96,7 @@ class TiffEditor:
             photometric="rgb" if channels == 3 else "minisblack",
         )
 
-        logger.info(f"新しいTIFFファイルを作成しました: {self.filepath}")
+        self.logger.info(f"新しいTIFFファイルを作成しました: {self.filepath}")
 
     def _open_file(self):
         """ファイルを開く"""
@@ -134,9 +127,10 @@ class TiffEditor:
 
     def _ensure_handle_initialized(self):
         """ハンドルが初期化されていることを保証する"""
-        logger = logging.getLogger()
         if not self._tiff_handle and not self._rasterio_handle:
-            logger.warning("ハンドルが初期化されていません。再初期化を試行します。")
+            self.logger.warning(
+                "ハンドルが初期化されていません。再初期化を試行します。"
+            )
             self._open_file()
 
     def __enter__(self):
@@ -230,7 +224,6 @@ class TiffEditor:
 
     def get_region(self, region: Rect) -> np.ndarray:
         """指定された領域のデータを読み込む（BGR形式で返す）"""
-        logger = logging.getLogger()
         x_start = region.x_range.min_val
         x_stop = region.x_range.max_val
         y_start = region.y_range.min_val
@@ -267,13 +260,13 @@ class TiffEditor:
         elif data.ndim == 3 and data.shape[2] == 4:
             data = cv2.cvtColor(data, cv2.COLOR_RGBA2BGRA)
 
-        logger.debug(f"領域を読み込みました（BGR形式）: {region}, shape: {data.shape}")
+        self.logger.debug(
+            f"領域を読み込みました（BGR形式）: {region}, shape: {data.shape}"
+        )
         return data
 
     def put_region(self, region: Rect, data: np.ndarray):
         """指定された領域にデータを書き込む（入力はBGR形式、内部でRGBに変換）"""
-
-        logger = logging.getLogger()
         if self.mode == "r":
             raise ValueError("読み込み専用モードでは書き込みできません")
 
@@ -325,7 +318,7 @@ class TiffEditor:
         else:
             raise ValueError("書き込みにはrasterioハンドルが必要です")
 
-        logger.debug(
+        self.logger.debug(
             f"領域に書き込みました（BGR→RGB変換済み）: {region}, shape: {data.shape}"
         )
 
@@ -382,7 +375,6 @@ class TiffEditor:
             rasterioのout_shapeパラメータを使用してメモリ効率的に縮小を行います。
         """
 
-        logger = logging.getLogger()
         if scale_factor is None and target_width is None:
             raise ValueError(
                 "scale_factorまたはtarget_widthのいずれかを指定してください"
@@ -406,7 +398,7 @@ class TiffEditor:
         output_width = int(original_width * scale_factor)
         output_height = int(original_height * scale_factor)
 
-        logger.info(
+        self.logger.info(
             f"画像を縮小中: {original_width}x{original_height} -> {output_width}x{output_height} (scale: {scale_factor:.3f})"
         )
 
@@ -462,7 +454,7 @@ class TiffEditor:
         elif channels == 4:
             scaled_data = cv2.cvtColor(scaled_data, cv2.COLOR_RGBA2BGRA)
 
-        logger.info(f"縮小完了（BGR形式）: 出力形状 {scaled_data.shape}")
+        self.logger.info(f"縮小完了（BGR形式）: 出力形状 {scaled_data.shape}")
         return scaled_data
 
 
@@ -829,7 +821,7 @@ class ScalableTiffEditor(TiffEditor):
             create_if_not_exists=create_if_not_exists,
         )
 
-        logger.info(
+        self.logger.info(
             f"ScalableTiffEditor初期化: 仮想サイズ{virtual_shape} -> 実際サイズ{actual_shape} (scale: {scale_factor})"
         )
 
@@ -897,7 +889,7 @@ class ScalableTiffEditor(TiffEditor):
                 interpolation=cv2.INTER_LINEAR,
             )
 
-        logger.debug(
+        self.logger.debug(
             f"仮想領域を読み込み: {region} -> 実際{actual_region}, リサイズ後{resized_data.shape}"
         )
         return resized_data
@@ -921,7 +913,7 @@ class ScalableTiffEditor(TiffEditor):
         actual_region = self._virtual_to_actual_coords(region)
 
         if actual_region.width <= 0 or actual_region.height <= 0:
-            logger.warning(f"実際の領域が無効です: {actual_region}")
+            self.logger.warning(f"実際の領域が無効です: {actual_region}")
             return
 
         # データを実際のサイズにリサイズ
@@ -943,7 +935,7 @@ class ScalableTiffEditor(TiffEditor):
         # 実際のファイルに書き込み
         super().put_region(actual_region, resized_data)
 
-        logger.debug(
+        self.logger.debug(
             f"仮想領域に書き込み: {region} -> 実際{actual_region}, 元データ{data.shape} -> リサイズ後{resized_data.shape}"
         )
 
