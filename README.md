@@ -1,5 +1,11 @@
 # Rasterio TIFF Editor
 
+> **🚨 重要なお知らせ**: このプロジェクトは新しいリポジトリ [`vitroid/tiffeditor`](https://github.com/vitroid/tiffeditor) に移行しました！
+> 
+> - **新機能やアップデート**は新しいリポジトリで提供されます
+> - **このリポジトリ**は互換性のために維持されます
+> - 詳細は [MIGRATION.md](./MIGRATION.md) をご覧ください
+
 メモリ効率の良い巨大 TIFF ファイルの部分編集を可能にする Python ライブラリです。
 
 ## 特徴
